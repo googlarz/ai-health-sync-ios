@@ -235,29 +235,39 @@ actor NetworkServer {
     }
 
     private func handleStatus(requestId: String) async -> HTTPResponse {
-        let enabled = await loadEnabledTypes()
-        let response = StatusResponse(
-            status: "ok",
-            version: "1",
-            deviceName: await deviceNameProvider(),
-            enabledTypes: enabled,
-            serverTime: Date()
-        )
-        await auditService.record(eventType: "api.request", details: [
-            "path": "/api/v1/status",
-            "requestId": requestId
-        ])
-        return HTTPResponse.json(statusCode: 200, body: response)
+        do {
+            let enabled = try await loadEnabledTypes()
+            let response = StatusResponse(
+                status: "ok",
+                version: "1.1",
+                deviceName: await deviceNameProvider(),
+                enabledTypes: enabled,
+                serverTime: Date()
+            )
+            await auditService.record(eventType: "api.request", details: [
+                "path": "/api/v1/status",
+                "requestId": requestId
+            ])
+            return HTTPResponse.json(statusCode: 200, body: response)
+        } catch {
+            AppLoggers.network.error("handleStatus: config unavailable: \(error.localizedDescription, privacy: .public)")
+            return HTTPResponse.plain(statusCode: 503, reason: "Service Unavailable", message: "Configuration unavailable")
+        }
     }
 
     private func handleTypes(requestId: String) async -> HTTPResponse {
-        let enabled = await loadEnabledTypes()
-        let response = TypesResponse(enabledTypes: enabled)
-        await auditService.record(eventType: "api.request", details: [
-            "path": "/api/v1/health/types",
-            "requestId": requestId
-        ])
-        return HTTPResponse.json(statusCode: 200, body: response)
+        do {
+            let enabled = try await loadEnabledTypes()
+            let response = TypesResponse(enabledTypes: enabled)
+            await auditService.record(eventType: "api.request", details: [
+                "path": "/api/v1/health/types",
+                "requestId": requestId
+            ])
+            return HTTPResponse.json(statusCode: 200, body: response)
+        } catch {
+            AppLoggers.network.error("handleTypes: config unavailable: \(error.localizedDescription, privacy: .public)")
+            return HTTPResponse.plain(statusCode: 503, reason: "Service Unavailable", message: "Configuration unavailable")
+        }
     }
 
     /// Default limit for health data queries
@@ -304,17 +314,7 @@ actor NetworkServer {
             return HTTPResponse.plain(statusCode: 400, reason: "Bad Request", message: "Limit must be positive")
         }
 
-        let enabledTypes = await loadEnabledTypes()
-        let enabledSet = Set(enabledTypes)
-        let requestedSet = Set(payload.types)
-        if !requestedSet.isSubset(of: enabledSet) {
-            await auditService.record(eventType: "security.unauthorized_access", details: [
-                "path": "/api/v1/health/data",
-                "requestId": requestId
-            ])
-            return HTTPResponse.plain(statusCode: 403, reason: "Forbidden", message: "Requested data types are not enabled")
-        }
-
+        // Check device lock state first — config read is unnecessary if device is locked.
         let isProtected = await protectedDataAvailable()
         guard isProtected else {
             let response = HealthDataResponse(status: .locked, samples: [], message: "Device is locked", hasMore: false, returnedCount: 0)
@@ -323,6 +323,23 @@ actor NetworkServer {
                 "requestId": requestId
             ])
             return HTTPResponse.json(statusCode: 423, reason: "Locked", body: response)
+        }
+
+        let enabledTypes: [HealthDataType]
+        do {
+            enabledTypes = try await loadEnabledTypes()
+        } catch {
+            AppLoggers.network.error("handleHealthData: config unavailable: \(error.localizedDescription, privacy: .public)")
+            return HTTPResponse.plain(statusCode: 503, reason: "Service Unavailable", message: "Configuration unavailable")
+        }
+        let enabledSet = Set(enabledTypes)
+        let requestedSet = Set(payload.types)
+        if !requestedSet.isSubset(of: enabledSet) {
+            await auditService.record(eventType: "security.unauthorized_access", details: [
+                "path": "/api/v1/health/data",
+                "requestId": requestId
+            ])
+            return HTTPResponse.plain(statusCode: 403, reason: "Forbidden", message: "Requested data types are not enabled")
         }
 
         let result = await healthService.fetchSamples(types: payload.types, startDate: payload.startDate, endDate: payload.endDate, limit: limit, offset: offset)
@@ -338,18 +355,17 @@ actor NetworkServer {
         return HTTPResponse.json(statusCode: 200, body: result)
     }
 
-    private func loadEnabledTypes() async -> [HealthDataType] {
-        await MainActor.run {
+    private func loadEnabledTypes() async throws -> [HealthDataType] {
+        try await MainActor.run {
             let context = modelContainer.mainContext
             let descriptor = FetchDescriptor<SyncConfiguration>()
-            do {
-                if let config = try context.fetch(descriptor).first {
-                    return config.enabledTypes
-                }
-            } catch {
-                AppLoggers.network.error("Failed to load enabled types: \(error.localizedDescription, privacy: .public)")
-            }
-            return HealthDataType.allCases
+            let config = try context.fetch(descriptor).first
+            if let config { return config.enabledTypes }
+            // First-run: no row yet — create one with safe defaults and persist it.
+            let newConfig = SyncConfiguration()
+            context.insert(newConfig)
+            try context.save()
+            return newConfig.enabledTypes
         }
     }
 

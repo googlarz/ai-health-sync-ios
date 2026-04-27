@@ -33,7 +33,8 @@ enum CLIError: Error {
 // MARK: - Version Information
 
 /// CLI version following semantic versioning (SemVer)
-let cliVersion = "1.0.1"
+let cliVersion = "1.1.0"
+let supportedServerVersions: Set<String> = ["1", "1.1"]
 
 /// Build metadata
 let cliBuildDate = "2026-02-19"
@@ -482,9 +483,12 @@ struct HealthSyncCLI {
         // Format fingerprint for display (show first 12 chars)
         let shortFingerprint = config.fingerprint.isEmpty ? "Unknown" : "SHA256:\(config.fingerprint.prefix(12))..."
 
-        // Count data types
-        let typeCount = response.enabledTypes.count
-        let typesSummary = typeCount == 1 ? "1 data type" : "\(typeCount) data types"
+        // Count data types (include unknown values from newer server versions)
+        let knownCount = response.enabledTypes.count
+        let unknownCount = response.enabledTypesWire.unknownRaw.count
+        let totalCount = knownCount + unknownCount
+        var typesSummary = totalCount == 1 ? "1 data type" : "\(totalCount) data types"
+        if unknownCount > 0 { typesSummary += " (\(unknownCount) not fetchable — update CLI)" }
 
         print("📡 Connection Status: \(statusIcon) \(statusText)")
         print("📱 Device: \(response.deviceName)")
@@ -494,6 +498,13 @@ struct HealthSyncCLI {
 
         // Show version info
         print("📦 Version: \(response.version)")
+        warnVersionSkew(response.version)
+    }
+
+    static func warnVersionSkew(_ serverVersion: String) {
+        if !supportedServerVersions.contains(serverVersion) {
+            fputs("warning: server protocol v\(serverVersion) is not supported by this CLI (supports: \(supportedServerVersions.sorted().joined(separator: ", "))). Update healthsync.\n", stderr)
+        }
     }
 
     static func types(args: [String]) async throws {
@@ -505,7 +516,11 @@ struct HealthSyncCLI {
         let (config, token) = try ConfigStore.load()
         let client = HealthSyncClient(host: config.host, port: config.port, token: token, fingerprint: config.fingerprint)
         let response: TypesResponse = try await client.send(path: "/api/v1/health/types", method: "GET", body: EmptyBody(), authorized: true)
-        print(response.enabledTypes.map { $0.rawValue }.joined(separator: ", "))
+        let knownTypes = response.enabledTypes.map(\.rawValue)
+        print(knownTypes.joined(separator: ", "))
+        if !response.enabledTypesWire.unknownRaw.isEmpty {
+            fputs("warning: server advertises \(response.enabledTypesWire.unknownRaw.count) type(s) not supported by this CLI version (not fetchable): \(response.enabledTypesWire.unknownRaw.joined(separator: ", "))\nRun `brew upgrade healthsync` to enable them.\n", stderr)
+        }
     }
 
     static func fetch(args: [String]) async throws {
@@ -547,6 +562,8 @@ struct HealthSyncCLI {
         let client = HealthSyncClient(host: config.host, port: config.port, token: token, fingerprint: config.fingerprint)
         let request = HealthDataRequest(startDate: startDate, endDate: endDate, types: types)
         let response: HealthDataResponse = try await client.send(path: "/api/v1/health/data", method: "POST", body: request, authorized: true)
+
+        if let v = response.version { warnVersionSkew(v) }
 
         switch outputFormat {
         case .json:
@@ -1086,18 +1103,46 @@ struct HealthDataResponse: Codable {
     let status: HealthDataStatus
     let samples: [HealthSampleDTO]
     let message: String?
+    let version: String?
 }
 
-struct StatusResponse: Codable {
+struct EnabledTypesWire: Decodable {
+    let known: [HealthDataType]
+    let unknownRaw: [String]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        let raw = try c.decode([String].self)
+        known = raw.compactMap { HealthDataType(rawValue: $0) }
+        unknownRaw = raw.filter { HealthDataType(rawValue: $0) == nil }
+    }
+
+    var allDisplayStrings: [String] { known.map(\.rawValue) + unknownRaw }
+}
+
+struct StatusResponse: Decodable {
     let status: String
     let version: String
     let deviceName: String
-    let enabledTypes: [HealthDataType]
+    let enabledTypesWire: EnabledTypesWire
     let serverTime: Date
+
+    var enabledTypes: [HealthDataType] { enabledTypesWire.known }
+
+    private enum CodingKeys: String, CodingKey {
+        case status, version, deviceName, serverTime
+        case enabledTypesWire = "enabledTypes"
+    }
 }
 
-struct TypesResponse: Codable {
-    let enabledTypes: [HealthDataType]
+struct TypesResponse: Decodable {
+    let enabledTypesWire: EnabledTypesWire
+
+    var enabledTypes: [HealthDataType] { enabledTypesWire.known }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabledTypesWire = "enabledTypes"
+    }
 }
 
 struct PairRequest: Codable {
@@ -1160,4 +1205,178 @@ enum HealthDataType: String, CaseIterable, Codable {
     case bodyMassIndex
     case bodyFatPercentage
     case leanBodyMass
+    case waistCircumference
+    case runningGroundContactTime
+    case runningStrideLength
+    case runningVerticalOscillation
+    case runningPower
+    case runningSpeed
+    case cyclingCadence
+    case cyclingPower
+    case cyclingSpeed
+    case walkingSpeed
+    case walkingStepLength
+    case walkingAsymmetryPercentage
+    case walkingDoubleSupportPercentage
+    case stairAscentSpeed
+    case stairDescentSpeed
+    case wristTemperature
+    case atrialFibrillationBurden
+    case timeInDaylight
+    case physicalEffort
+    case mindfulMinutes
+    // Cardiac events
+    case irregularHeartRhythmEvent
+    case highHeartRateEvent
+    case lowHeartRateEvent
+    case heartRateRecoveryOneMinute
+    // Blood / metabolic
+    case bloodGlucose
+    case peripheralPerfusionIndex
+    // Swimming
+    case distanceSwimming
+    case swimmingStrokeCount
+    // Other sports / adaptive
+    case distanceDownhillSnowSports
+    case distanceWheelchair
+    case pushCount
+    // Cycling performance
+    case cyclingFunctionalThresholdPower
+    // Diving / water sports
+    case underwaterDepth
+    case waterTemperature
+    // Hearing
+    case environmentalAudioExposure
+    case headphoneAudioExposure
+    // Safety / lifestyle
+    case numberOfTimesFallen
+    case numberOfAlcoholicBeverages
+
+    // Nutrition
+    case dietaryEnergyConsumed
+    case dietaryWater
+    case dietaryCaffeine
+    case dietaryProtein
+    case dietaryFatTotal
+    case dietaryFatSaturated
+    case dietaryFatPolyunsaturated
+    case dietaryFatMonounsaturated
+    case dietaryCholesterol
+    case dietaryCarbohydrates
+    case dietaryFiber
+    case dietarySugar
+    case dietarySodium
+    case dietaryCalcium
+    case dietaryIron
+    case dietaryMagnesium
+    case dietaryPotassium
+    case dietaryZinc
+    case dietaryPhosphorus
+    case dietaryIodine
+    case dietarySelenium
+    case dietaryCopper
+    case dietaryManganese
+    case dietaryChromium
+    case dietaryMolybdenum
+    case dietaryChloride
+    case dietaryVitaminA
+    case dietaryVitaminB6
+    case dietaryVitaminB12
+    case dietaryVitaminC
+    case dietaryVitaminD
+    case dietaryVitaminE
+    case dietaryVitaminK
+    case dietaryRiboflavin
+    case dietaryThiamin
+    case dietaryNiacin
+    case dietaryFolate
+    case dietaryBiotin
+    case dietaryPantothenicAcid
+
+    // Symptoms
+    case abdominalCramps
+    case acne
+    case appetiteChanges
+    case bladderIncontinence
+    case bloating
+    case breastPain
+    case chestTightnessOrPain
+    case chills
+    case constipation
+    case coughing
+    case diarrhea
+    case dizziness
+    case drySkin
+    case fainting
+    case fatigue
+    case fever
+    case generalizedBodyAche
+    case hairLoss
+    case headache
+    case heartburn
+    case hotFlashes
+    case lossOfSmell
+    case lossOfTaste
+    case lowerBackPain
+    case memoryLapse
+    case moodChanges
+    case nausea
+    case nightSweats
+    case pelvicPain
+    case rapidPoundingOrFlutteringHeartbeat
+    case runnyNose
+    case shortnessOfBreath
+    case sinusCongestion
+    case skippedHeartbeat
+    case sleepChanges
+    case soreThroat
+    case vaginalDryness
+    case vomiting
+    case wheezing
+
+    // Reproductive health
+    case menstrualFlow
+    case intermenstrualBleeding
+    case infrequentMenstrualCycles
+    case irregularMenstrualCycles
+    case persistentIntermenstrualBleeding
+    case prolongedMenstrualPeriods
+    case ovulationTestResult
+    case pregnancyTestResult
+    case progesteroneTestResult
+    case sexualActivity
+    case cervicalMucusQuality
+    case contraceptive
+    case lactation
+    case bleedingAfterPregnancy
+    case bleedingDuringPregnancy
+
+    // Lifestyle / hygiene events
+    case handwashingEvent
+    case toothbrushingEvent
+
+    // Audio events
+    case environmentalAudioExposureEvent
+    case headphoneAudioExposureEvent
+
+    // Cardio fitness / mobility events
+    case lowCardioFitnessEvent
+    case appleWalkingSteadinessEvent
+    case appleStandHour
+
+    // Vital signs / spirometry / mobility
+    case basalBodyTemperature
+    case bloodAlcoholContent
+    case electrodermalActivity
+    case environmentalSoundReduction
+    case forcedExpiratoryVolume1
+    case forcedVitalCapacity
+    case peakExpiratoryFlowRate
+    case inhalerUsage
+    case insulinDelivery
+    case nikeFuel
+    case sixMinuteWalkTestDistance
+    case appleWalkingSteadiness
+    case uvExposure
+    case appleMoveTime
 }
