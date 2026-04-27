@@ -26,7 +26,21 @@ struct HealthSampleMapper {
             if requestedType.isCategorySleepType, !matchesSleepType(requestedType, categorySample: categorySample) {
                 return nil
             }
-            let metadata = sleepMetadata(for: categorySample)
+            // Mindful sessions: export duration in minutes, not the raw category code
+            if requestedType == .mindfulMinutes {
+                let minutes = categorySample.endDate.timeIntervalSince(categorySample.startDate) / 60
+                return HealthSampleDTO(
+                    id: categorySample.uuid,
+                    type: requestedType.rawValue,
+                    value: minutes,
+                    unit: "min",
+                    startDate: categorySample.startDate,
+                    endDate: categorySample.endDate,
+                    sourceName: sourceName,
+                    metadata: nil
+                )
+            }
+            let metadata = requestedType.isCategorySleepType ? sleepMetadata(for: categorySample) : nil
             return HealthSampleDTO(
                 id: categorySample.uuid,
                 type: requestedType.rawValue,
@@ -42,13 +56,41 @@ struct HealthSampleMapper {
         if let workout = sample as? HKWorkout {
             var metadata: [String: String] = [
                 "activityType": workout.workoutActivityType.name,
-                "durationSeconds": String(format: "%.0f", workout.duration)
+                "durationSeconds": String(format: "%.0f", workout.duration),
             ]
             if let energy = activeEnergyKilocalories(for: workout) {
                 metadata["totalEnergyKilocalories"] = String(format: "%.2f", energy)
             }
             if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
                 metadata["totalDistanceMeters"] = String(format: "%.2f", distance)
+                // Derive avg speed from distance + duration when statistics are absent
+                if workout.duration > 0 {
+                    metadata["avgSpeedMetersPerSec"] = String(format: "%.4f", distance / workout.duration)
+                }
+            }
+            // Heart rate statistics (embedded by Apple Watch and some third-party apps)
+            if let hrStats = workout.statistics(for: HKQuantityType(.heartRate)) {
+                let bpm = HKUnit.count().unitDivided(by: .minute())
+                if let min = hrStats.minimumQuantity()?.doubleValue(for: bpm) {
+                    metadata["heartRateMin"] = String(format: "%.0f", min)
+                }
+                if let max = hrStats.maximumQuantity()?.doubleValue(for: bpm) {
+                    metadata["heartRateMax"] = String(format: "%.0f", max)
+                }
+                if let avg = hrStats.averageQuantity()?.doubleValue(for: bpm) {
+                    metadata["heartRateAvg"] = String(format: "%.1f", avg)
+                }
+            }
+            // Elevation from workout metadata
+            if let ascent = (workout.metadata?[HKMetadataKeyElevationAscended] as? HKQuantity)?.doubleValue(for: .meter()) {
+                metadata["elevationAscendedMeters"] = String(format: "%.1f", ascent)
+            }
+            if let descent = (workout.metadata?[HKMetadataKeyElevationDescended] as? HKQuantity)?.doubleValue(for: .meter()) {
+                metadata["elevationDescendedMeters"] = String(format: "%.1f", descent)
+            }
+            // Indoor/outdoor flag
+            if let indoorWorkout = workout.metadata?[HKMetadataKeyIndoorWorkout] as? Bool {
+                metadata["isIndoor"] = indoorWorkout ? "true" : "false"
             }
 
             return HealthSampleDTO(
@@ -101,6 +143,9 @@ struct HealthSampleMapper {
         case .heartRate, .restingHeartRate, .walkingHeartRateAverage:
             return .count().unitDivided(by: .minute())
         case .heartRateVariability:
+            // HealthKit stores SDNN internally in seconds. Keep seconds for v1 wire
+            // compat — changing to ms would silently corrupt existing client data by 1000x.
+            // Version the API before changing this unit.
             return .second()
         case .bloodPressureSystolic, .bloodPressureDiastolic:
             return .millimeterOfMercury()
@@ -108,20 +153,37 @@ struct HealthSampleMapper {
             return .percent()
         case .respiratoryRate:
             return .count().unitDivided(by: .minute())
-        case .bodyTemperature:
+        case .bodyTemperature, .wristTemperature:
             return .degreeCelsius()
         case .vo2Max:
             return HKUnit(from: "ml/kg*min")
-        case .weight:
+        case .weight, .leanBodyMass:
             return .gramUnit(with: .kilo)
-        case .height:
+        case .height, .runningStrideLength, .walkingStepLength:
             return .meter()
+        case .runningVerticalOscillation:
+            // Store in centimetres — more readable than metres for ~8cm oscillation
+            return .meterUnit(with: .centi)
+        case .runningGroundContactTime:
+            return .secondUnit(with: .milli)
+        case .runningPower, .cyclingPower:
+            return .watt()
+        case .runningSpeed, .cyclingSpeed, .walkingSpeed:
+            return .meter().unitDivided(by: .second())
+        case .cyclingCadence:
+            return .count().unitDivided(by: .minute())
+        case .walkingAsymmetryPercentage, .walkingDoubleSupportPercentage, .bodyFatPercentage, .atrialFibrillationBurden:
+            return .percent()
+        case .stairAscentSpeed, .stairDescentSpeed:
+            return .meter().unitDivided(by: .second())
+        case .timeInDaylight, .mindfulMinutes:
+            return .minute()
+        case .physicalEffort:
+            return HKUnit(from: "kcal/hr·kg")
         case .bodyMassIndex:
             return .count()
-        case .bodyFatPercentage:
-            return .percent()
-        case .leanBodyMass:
-            return .gramUnit(with: .kilo)
+        case .waistCircumference:
+            return .meterUnit(with: .centi)
         case .sleepAnalysis, .sleepInBed, .sleepAsleep, .sleepAwake, .sleepREM, .sleepCore, .sleepDeep, .workouts:
             return .count()
         }
@@ -165,6 +227,49 @@ private extension HKWorkoutActivityType {
         case .cycling: return "cycling"
         case .swimming: return "swimming"
         case .yoga: return "yoga"
+        case .elliptical: return "elliptical"
+        case .rowing: return "rowing"
+        case .hiking: return "hiking"
+        case .climbing: return "climbing"
+        case .skiing: return "skiing"
+        case .snowboarding: return "snowboarding"
+        case .soccer: return "soccer"
+        case .basketball: return "basketball"
+        case .tennis: return "tennis"
+        case .tableTennis: return "tableTennis"
+        case .badminton: return "badminton"
+        case .volleyball: return "volleyball"
+        case .gymnastics: return "gymnastics"
+        case .dance: return "dance"
+        case .pilates: return "pilates"
+        case .flexibility: return "flexibility"
+        case .functionalStrengthTraining: return "functionalStrength"
+        case .traditionalStrengthTraining: return "strengthTraining"
+        case .highIntensityIntervalTraining: return "hiit"
+        case .crossTraining: return "crossTraining"
+        case .jumpRope: return "jumpRope"
+        case .stairClimbing: return "stairClimbing"
+        case .coreTraining: return "coreTraining"
+        case .mindAndBody: return "mindAndBody"
+        case .boxing: return "boxing"
+        case .martialArts: return "martialArts"
+        case .golf: return "golf"
+        case .curling: return "curling"
+        case .cricket: return "cricket"
+        case .rugby: return "rugby"
+        case .americanFootball: return "americanFootball"
+        case .baseball: return "baseball"
+        case .softball: return "softball"
+        case .handCycling: return "handCycling"
+        case .wheelchairWalkPace: return "wheelchairWalk"
+        case .wheelchairRunPace: return "wheelchairRun"
+        case .waterFitness: return "waterFitness"
+        case .waterPolo: return "waterPolo"
+        case .waterSports: return "waterSports"
+        case .surfingSports: return "surfing"
+        case .snowSports: return "snowSports"
+        case .swimBikeRun: return "triathlon"
+        case .other: return "other"
         default: return "other"
         }
     }
