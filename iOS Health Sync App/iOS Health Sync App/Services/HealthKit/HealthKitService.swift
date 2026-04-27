@@ -7,6 +7,7 @@ import os
 
 protocol HealthDataProviding: Sendable {
     func fetchSamples(types: [HealthDataType], startDate: Date, endDate: Date, limit: Int, offset: Int) async -> HealthDataResponse
+    func fetchRoutes(startDate: Date, endDate: Date) async -> RouteResponse
 }
 
 actor HealthKitService {
@@ -21,7 +22,11 @@ actor HealthKitService {
     }
 
     func requestAuthorization(for types: [HealthDataType]) async throws -> Bool {
-        let readTypes = Set(await MainActor.run { types.compactMap { $0.sampleType } })
+        var readTypes = Set(await MainActor.run { types.compactMap { $0.sampleType as HKObjectType? } })
+        // Always request workout route access alongside workout data
+        if types.contains(.workouts) {
+            readTypes.insert(HKSeriesType.workoutRoute())
+        }
         return try await withCheckedThrowingContinuation { continuation in
             store.requestAuthorization(toShare: [], read: readTypes) { success, error in
                 if let error {
@@ -47,7 +52,8 @@ actor HealthKitService {
     /// Returns true if authorization has already been requested (user saw the dialog).
     /// NOTE: This does NOT tell us if the user granted or denied - that's private by design.
     func hasRequestedAuthorization(for types: [HealthDataType]) async -> Bool {
-        let readTypes = Set(await MainActor.run { types.compactMap { type in if let st = type.sampleType { return st as HKObjectType } else { return nil } } })
+        var readTypes = Set(await MainActor.run { types.compactMap { type in if let st = type.sampleType { return st as HKObjectType } else { return nil } } })
+        if types.contains(.workouts) { readTypes.insert(HKSeriesType.workoutRoute()) }
         guard !readTypes.isEmpty else { return false }
 
         return await withCheckedContinuation { continuation in
@@ -130,6 +136,87 @@ actor HealthKitService {
                 continuation.resume(returning: samples)
             }
         }
+    }
+
+    private static let maxWorkoutsPerRouteExport = 50
+    private static let maxPointsPerRoute = 10_000
+    private static let maxTotalPointsPerResponse = 100_000
+
+    func fetchRoutes(startDate: Date, endDate: Date) async -> RouteResponse {
+        guard isAvailable() else {
+            return RouteResponse(status: .error, routes: [], message: "Health data unavailable")
+        }
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
+        let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
+
+        // 1. Fetch workouts — fetch one extra to detect truncation
+        let workouts: [HKWorkout] = await withCheckedContinuation { continuation in
+            let q = HKSampleQuery(sampleType: HKObjectType.workoutType(), predicate: predicate,
+                                  limit: Self.maxWorkoutsPerRouteExport + 1, sortDescriptors: [sort]) { _, samples, _ in
+                continuation.resume(returning: (samples as? [HKWorkout]) ?? [])
+            }
+            store.execute(q)
+        }
+        let workoutsTruncated = workouts.count > Self.maxWorkoutsPerRouteExport
+        let workoutsToProcess = Array(workouts.prefix(Self.maxWorkoutsPerRouteExport))
+
+        var routes: [WorkoutRoute] = []
+        var anyPointsTruncated = false
+        var totalPoints = 0
+
+        for workout in workoutsToProcess {
+            if totalPoints >= Self.maxTotalPointsPerResponse {
+                anyPointsTruncated = true
+                break
+            }
+            // 2. Fetch routes associated with this workout
+            let routeType = HKSeriesType.workoutRoute()
+            let workoutPredicate = HKQuery.predicateForObjects(from: workout)
+            let workoutRoutes: [HKWorkoutRoute] = await withCheckedContinuation { continuation in
+                let q = HKSampleQuery(sampleType: routeType, predicate: workoutPredicate,
+                                      limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
+                    continuation.resume(returning: (samples as? [HKWorkoutRoute]) ?? [])
+                }
+                store.execute(q)
+            }
+
+            for route in workoutRoutes {
+                // 3. Collect all CLLocation points from the route
+                var points: [RoutePoint] = []
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    let q = HKWorkoutRouteQuery(route: route) { _, locations, done, _ in
+                        for loc in locations ?? [] where points.count < Self.maxPointsPerRoute {
+                            points.append(RoutePoint(
+                                latitude: loc.coordinate.latitude,
+                                longitude: loc.coordinate.longitude,
+                                altitude: loc.altitude,
+                                timestamp: loc.timestamp,
+                                speed: loc.speed >= 0 ? loc.speed : nil,
+                                course: loc.course >= 0 ? loc.course : nil,
+                                horizontalAccuracy: loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : nil,
+                                verticalAccuracy: loc.verticalAccuracy >= 0 ? loc.verticalAccuracy : nil
+                            ))
+                        }
+                        if done { continuation.resume() }
+                    }
+                    store.execute(q)
+                }
+                if !points.isEmpty {
+                    if points.count >= Self.maxPointsPerRoute { anyPointsTruncated = true }
+                    totalPoints += points.count
+                    routes.append(WorkoutRoute(workoutId: workout.uuid, routeId: route.uuid,
+                                               startDate: route.startDate, endDate: route.endDate,
+                                               points: points))
+                }
+            }
+        }
+
+        let truncationMsg: String? = (workoutsTruncated || anyPointsTruncated)
+            ? "Export truncated: workouts=\(workoutsTruncated), points=\(anyPointsTruncated). Narrow the date range."
+            : nil
+        return RouteResponse(status: .ok, routes: routes, message: truncationMsg,
+                             workoutsProcessed: workoutsToProcess.count,
+                             workoutsTruncated: workoutsTruncated, routePointsTruncated: anyPointsTruncated)
     }
 
 }
