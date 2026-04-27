@@ -27,6 +27,11 @@ struct HealthSampleMapper {
                 return nil
             }
             let metadata = sleepMetadata(for: categorySample)
+            // value encodes the raw HKCategoryValue integer. For sleep types this is
+            // HKCategoryValueSleepAnalysis (see sleepMetadata for the decoded stage string).
+            // For cardiac events (irregularHeartRhythmEvent, highHeartRateEvent,
+            // lowHeartRateEvent) it is HKCategoryValuePresence: 0 = notPresent, 1 = present.
+            // For mindfulMinutes it is always HKCategoryValue.notApplicable (0).
             return HealthSampleDTO(
                 id: categorySample.uuid,
                 type: requestedType.rawValue,
@@ -124,6 +129,45 @@ struct HealthSampleMapper {
             return .gramUnit(with: .kilo)
         case .sleepAnalysis, .sleepInBed, .sleepAsleep, .sleepAwake, .sleepREM, .sleepCore, .sleepDeep, .workouts:
             return .count()
+        case .heartRateRecoveryOneMinute:
+            return .count().unitDivided(by: .minute())
+        case .bloodGlucose:
+            return HKUnit(from: "mg/dL")
+        case .peripheralPerfusionIndex:
+            return .percent()
+        case .distanceSwimming, .distanceDownhillSnowSports, .distanceWheelchair, .underwaterDepth:
+            return .meter()
+        case .swimmingStrokeCount, .pushCount, .numberOfTimesFallen, .numberOfAlcoholicBeverages:
+            return .count()
+        case .cyclingFunctionalThresholdPower:
+            return .watt()
+        case .waterTemperature:
+            return .degreeCelsius()
+        case .environmentalAudioExposure, .headphoneAudioExposure:
+            return HKUnit(from: "dBASPL")
+        case .irregularHeartRhythmEvent, .highHeartRateEvent, .lowHeartRateEvent:
+            return .count()
+        case .waistCircumference, .runningStrideLength, .runningVerticalOscillation, .walkingStepLength:
+            return .meter()
+        case .runningGroundContactTime:
+            return .second()
+        case .runningPower, .cyclingPower:
+            return .watt()
+        case .runningSpeed, .cyclingSpeed, .walkingSpeed, .stairAscentSpeed, .stairDescentSpeed:
+            return .meter().unitDivided(by: .second())
+        case .cyclingCadence:
+            return .count().unitDivided(by: .minute())
+        case .walkingAsymmetryPercentage, .walkingDoubleSupportPercentage, .atrialFibrillationBurden:
+            return .percent()
+        case .wristTemperature:
+            return .degreeCelsius()
+        case .timeInDaylight:
+            return .minute()
+        case .physicalEffort:
+            return HKUnit(from: "kcal/hr*kg")
+        case .mindfulMinutes:
+            // category type — routed via HKCategorySample path, not this function
+            return .minute()
         }
     }
 

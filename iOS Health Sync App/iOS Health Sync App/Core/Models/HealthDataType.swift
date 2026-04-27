@@ -40,6 +40,68 @@ enum HealthDataType: String, CaseIterable, Codable, Sendable, Identifiable {
     case bodyFatPercentage
     case leanBodyMass
 
+    // Cardiac events
+    case irregularHeartRhythmEvent
+    case highHeartRateEvent
+    case lowHeartRateEvent
+    case heartRateRecoveryOneMinute
+
+    // Blood / metabolic
+    case bloodGlucose
+    case peripheralPerfusionIndex
+
+    // Swimming
+    case distanceSwimming
+    case swimmingStrokeCount
+
+    // Other sports / adaptive
+    case distanceDownhillSnowSports
+    case distanceWheelchair
+    case pushCount
+
+    // Cycling performance
+    case cyclingFunctionalThresholdPower
+
+    // Diving / water sports
+    case underwaterDepth
+    case waterTemperature
+
+    // Hearing
+    case environmentalAudioExposure
+    case headphoneAudioExposure
+
+    // Safety / lifestyle
+    case numberOfTimesFallen
+    case numberOfAlcoholicBeverages
+
+    // Running dynamics
+    case waistCircumference
+    case runningGroundContactTime
+    case runningStrideLength
+    case runningVerticalOscillation
+    case runningPower
+    case runningSpeed
+
+    // Cycling dynamics
+    case cyclingCadence
+    case cyclingPower
+    case cyclingSpeed
+
+    // Walking / mobility
+    case walkingSpeed
+    case walkingStepLength
+    case walkingAsymmetryPercentage
+    case walkingDoubleSupportPercentage
+    case stairAscentSpeed
+    case stairDescentSpeed
+
+    // Advanced health
+    case wristTemperature
+    case atrialFibrillationBurden
+    case timeInDaylight
+    case physicalEffort
+    case mindfulMinutes
+
     var id: String { rawValue }
 
     var displayName: String {
@@ -75,6 +137,44 @@ enum HealthDataType: String, CaseIterable, Codable, Sendable, Identifiable {
         case .bodyMassIndex: return "Body Mass Index"
         case .bodyFatPercentage: return "Body Fat %"
         case .leanBodyMass: return "Lean Body Mass"
+        case .irregularHeartRhythmEvent: return "Irregular Rhythm Event"
+        case .highHeartRateEvent: return "High Heart Rate Event"
+        case .lowHeartRateEvent: return "Low Heart Rate Event"
+        case .heartRateRecoveryOneMinute: return "HR Recovery (1 min)"
+        case .bloodGlucose: return "Blood Glucose"
+        case .peripheralPerfusionIndex: return "Peripheral Perfusion Index"
+        case .distanceSwimming: return "Swimming Distance"
+        case .swimmingStrokeCount: return "Swimming Stroke Count"
+        case .distanceDownhillSnowSports: return "Downhill Snow Sports Distance"
+        case .distanceWheelchair: return "Wheelchair Distance"
+        case .pushCount: return "Push Count"
+        case .cyclingFunctionalThresholdPower: return "Cycling FTP"
+        case .underwaterDepth: return "Underwater Depth"
+        case .waterTemperature: return "Water Temperature"
+        case .environmentalAudioExposure: return "Environmental Audio Exposure"
+        case .headphoneAudioExposure: return "Headphone Audio Exposure"
+        case .numberOfTimesFallen: return "Times Fallen"
+        case .numberOfAlcoholicBeverages: return "Alcoholic Beverages"
+        case .waistCircumference: return "Waist Circumference"
+        case .runningGroundContactTime: return "Running Ground Contact Time"
+        case .runningStrideLength: return "Running Stride Length"
+        case .runningVerticalOscillation: return "Running Vertical Oscillation"
+        case .runningPower: return "Running Power"
+        case .runningSpeed: return "Running Speed"
+        case .cyclingCadence: return "Cycling Cadence"
+        case .cyclingPower: return "Cycling Power"
+        case .cyclingSpeed: return "Cycling Speed"
+        case .walkingSpeed: return "Walking Speed"
+        case .walkingStepLength: return "Walking Step Length"
+        case .walkingAsymmetryPercentage: return "Walking Asymmetry"
+        case .walkingDoubleSupportPercentage: return "Walking Double Support"
+        case .stairAscentSpeed: return "Stair Ascent Speed"
+        case .stairDescentSpeed: return "Stair Descent Speed"
+        case .wristTemperature: return "Wrist Temperature"
+        case .atrialFibrillationBurden: return "AFib Burden"
+        case .timeInDaylight: return "Time in Daylight"
+        case .physicalEffort: return "Physical Effort"
+        case .mindfulMinutes: return "Mindful Minutes"
         }
     }
 
@@ -111,6 +211,44 @@ enum HealthDataType: String, CaseIterable, Codable, Sendable, Identifiable {
         case .bodyMassIndex: return HKObjectType.quantityType(forIdentifier: .bodyMassIndex)
         case .bodyFatPercentage: return HKObjectType.quantityType(forIdentifier: .bodyFatPercentage)
         case .leanBodyMass: return HKObjectType.quantityType(forIdentifier: .leanBodyMass)
+        case .irregularHeartRhythmEvent: return HKObjectType.categoryType(forIdentifier: .irregularHeartRhythmEvent)
+        case .highHeartRateEvent: return HKObjectType.categoryType(forIdentifier: .highHeartRateEvent)
+        case .lowHeartRateEvent: return HKObjectType.categoryType(forIdentifier: .lowHeartRateEvent)
+        case .heartRateRecoveryOneMinute: return HKObjectType.quantityType(forIdentifier: .heartRateRecoveryOneMinute)
+        case .bloodGlucose: return HKObjectType.quantityType(forIdentifier: .bloodGlucose)
+        case .peripheralPerfusionIndex: return HKObjectType.quantityType(forIdentifier: .peripheralPerfusionIndex)
+        case .distanceSwimming: return HKObjectType.quantityType(forIdentifier: .distanceSwimming)
+        case .swimmingStrokeCount: return HKObjectType.quantityType(forIdentifier: .swimmingStrokeCount)
+        case .distanceDownhillSnowSports: return HKObjectType.quantityType(forIdentifier: .distanceDownhillSnowSports)
+        case .distanceWheelchair: return HKObjectType.quantityType(forIdentifier: .distanceWheelchair)
+        case .pushCount: return HKObjectType.quantityType(forIdentifier: .pushCount)
+        case .cyclingFunctionalThresholdPower: return HKObjectType.quantityType(forIdentifier: .cyclingFunctionalThresholdPower)
+        case .underwaterDepth: return HKObjectType.quantityType(forIdentifier: .underwaterDepth)
+        case .waterTemperature: return HKObjectType.quantityType(forIdentifier: .waterTemperature)
+        case .environmentalAudioExposure: return HKObjectType.quantityType(forIdentifier: .environmentalAudioExposure)
+        case .headphoneAudioExposure: return HKObjectType.quantityType(forIdentifier: .headphoneAudioExposure)
+        case .numberOfTimesFallen: return HKObjectType.quantityType(forIdentifier: .numberOfTimesFallen)
+        case .numberOfAlcoholicBeverages: return HKObjectType.quantityType(forIdentifier: .numberOfAlcoholicBeverages)
+        case .waistCircumference: return HKObjectType.quantityType(forIdentifier: .waistCircumference)
+        case .runningGroundContactTime: return HKObjectType.quantityType(forIdentifier: .runningGroundContactTime)
+        case .runningStrideLength: return HKObjectType.quantityType(forIdentifier: .runningStrideLength)
+        case .runningVerticalOscillation: return HKObjectType.quantityType(forIdentifier: .runningVerticalOscillation)
+        case .runningPower: return HKObjectType.quantityType(forIdentifier: .runningPower)
+        case .runningSpeed: return HKObjectType.quantityType(forIdentifier: .runningSpeed)
+        case .cyclingCadence: return HKObjectType.quantityType(forIdentifier: .cyclingCadence)
+        case .cyclingPower: return HKObjectType.quantityType(forIdentifier: .cyclingPower)
+        case .cyclingSpeed: return HKObjectType.quantityType(forIdentifier: .cyclingSpeed)
+        case .walkingSpeed: return HKObjectType.quantityType(forIdentifier: .walkingSpeed)
+        case .walkingStepLength: return HKObjectType.quantityType(forIdentifier: .walkingStepLength)
+        case .walkingAsymmetryPercentage: return HKObjectType.quantityType(forIdentifier: .walkingAsymmetryPercentage)
+        case .walkingDoubleSupportPercentage: return HKObjectType.quantityType(forIdentifier: .walkingDoubleSupportPercentage)
+        case .stairAscentSpeed: return HKObjectType.quantityType(forIdentifier: .stairAscentSpeed)
+        case .stairDescentSpeed: return HKObjectType.quantityType(forIdentifier: .stairDescentSpeed)
+        case .wristTemperature: return HKObjectType.quantityType(forIdentifier: .appleSleepingWristTemperature)
+        case .atrialFibrillationBurden: return HKObjectType.quantityType(forIdentifier: .atrialFibrillationBurden)
+        case .timeInDaylight: return HKObjectType.quantityType(forIdentifier: .timeInDaylight)
+        case .physicalEffort: return HKObjectType.quantityType(forIdentifier: .physicalEffort)
+        case .mindfulMinutes: return HKObjectType.categoryType(forIdentifier: .mindfulSession)
         }
     }
 
