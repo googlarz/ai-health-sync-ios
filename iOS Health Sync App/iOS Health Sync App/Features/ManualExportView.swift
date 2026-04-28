@@ -7,8 +7,18 @@ import SwiftUI
 /// writes them to a temp file the user can share or save via the system share
 /// sheet (Files app, AirDrop, Mail, Messages, iCloud Drive, etc.).
 ///
-/// This is the iPhone-side counterpart to the Mac CLI's `healthsync fetch`.
-/// A non-tech user can grab their data without ever touching a Mac.
+/// The export is composed from **channels** (Health Metrics, Workouts,
+/// Symptoms, Cycle Tracking, Cardiac Events). Each channel resolves to a
+/// scoped subset of the user's globally-enabled types. The user toggles
+/// channels on/off for this single export — channel state is local to the
+/// view and resets when the sheet closes (per Codex review: this is
+/// presentation-layer regrouping, not durable sync policy).
+///
+/// Iteration scope (PR20):
+///   - Channel taxonomy + per-channel toggles
+///   - Channel-scoped type union passed to existing `runManualExport`
+///   - Disable Export when no channels enabled (UX guard, not just backend error)
+///   - Sub-controls (Summarize, Time Grouping, Include GPX, etc.) deferred
 struct ManualExportView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
@@ -17,6 +27,9 @@ struct ManualExportView: View {
     @State private var format: AppState.ManualExportFormat = .csv
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
     @State private var customEnd = Date()
+    @State private var enabledChannels: Set<ExportChannel> = Set(
+        ExportChannel.allCases.filter { $0.defaultEnabled }
+    )
     @State private var isExporting = false
     @State private var exportedFile: ExportFile?
     @State private var errorMessage: String?
@@ -35,10 +48,114 @@ struct ManualExportView: View {
         }
     }
 
+    /// Channels — each maps to a scoped subset of the user's globally-enabled
+    /// types. The Health Metrics channel is the catch-all for everything not
+    /// covered by a more specific channel.
+    enum ExportChannel: String, CaseIterable, Identifiable {
+        case healthMetrics
+        case workouts
+        case symptoms
+        case cycleTracking
+        case cardiacEvents
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .healthMetrics:  return "Health Metrics"
+            case .workouts:       return "Workouts"
+            case .symptoms:       return "Symptoms"
+            case .cycleTracking:  return "Cycle Tracking"
+            case .cardiacEvents:  return "Cardiac Events"
+            }
+        }
+
+        var iconSystemName: String {
+            switch self {
+            case .healthMetrics:  return "heart.text.square"
+            case .workouts:       return "figure.run.square.stack"
+            case .symptoms:       return "thermometer"
+            case .cycleTracking:  return "calendar"
+            case .cardiacEvents:  return "waveform.path.ecg"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .healthMetrics:  return "Activity, vitals, sleep, body, nutrition, mobility, and the rest of your standard health profile."
+            case .workouts:       return "Workout sessions with duration, energy, distance, and source."
+            case .symptoms:       return "Logged symptoms (headache, fatigue, mood changes, etc.)."
+            case .cycleTracking:  return "Menstrual cycle tracking and reproductive health entries."
+            case .cardiacEvents:  return "Apple Watch heart rhythm event alerts (irregular, high, and low)."
+            }
+        }
+
+        var defaultEnabled: Bool {
+            switch self {
+            case .healthMetrics, .workouts: return true
+            default:                        return false
+            }
+        }
+
+        var isSensitive: Bool {
+            switch self {
+            case .cycleTracking, .cardiacEvents: return true
+            default:                              return false
+            }
+        }
+
+        /// Resolves this channel to a set of HealthDataType values, scoped to
+        /// the user's globally-enabled types. A channel that resolves to an
+        /// empty set should not contribute to the export (the union union'd
+        /// with empty is a no-op).
+        func types(in enabled: Set<HealthDataType>) -> Set<HealthDataType> {
+            switch self {
+            case .healthMetrics:
+                // Catch-all: everything in `enabled` except types covered by
+                // the other channels.
+                return enabled.filter { type in
+                    type != .workouts
+                        && type.category != .symptoms
+                        && type.category != .reproductiveHealth
+                        && !Self.isCardiacEvent(type)
+                }
+            case .workouts:
+                return enabled.contains(.workouts) ? [.workouts] : []
+            case .symptoms:
+                return enabled.filter { $0.category == .symptoms }
+            case .cycleTracking:
+                return enabled.filter { $0.category == .reproductiveHealth }
+            case .cardiacEvents:
+                return enabled.filter { Self.isCardiacEvent($0) }
+            }
+        }
+
+        private static func isCardiacEvent(_ t: HealthDataType) -> Bool {
+            switch t {
+            case .irregularHeartRhythmEvent, .highHeartRateEvent, .lowHeartRateEvent:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
     struct ExportFile: Identifiable {
         let id = UUID()
         let url: URL
         let sampleCount: Int
+    }
+
+    /// Union of types contributed by every enabled channel, scoped to the
+    /// user's globally-enabled types. Drives the Export button's disabled
+    /// state and the actual fetch.
+    private var resolvedTypes: [HealthDataType] {
+        let enabled = Set(appState.syncConfiguration.enabledTypes)
+        var union: Set<HealthDataType> = []
+        for channel in enabledChannels {
+            union.formUnion(channel.types(in: enabled))
+        }
+        return Array(union)
     }
 
     var body: some View {
@@ -64,12 +181,9 @@ struct ManualExportView: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                Section {
-                    LabeledContent("Categories",
-                                   value: "\(appState.syncConfiguration.enabledTypes.count) selected")
-                } footer: {
-                    Text("Adjust which categories to include from the main screen's Shared Categories section.")
-                }
+
+                channelsSection
+
                 Section {
                     Button {
                         Task { await runExport() }
@@ -85,11 +199,19 @@ struct ManualExportView: View {
                                 .frame(maxWidth: .infinity)
                         }
                     }
-                    .disabled(isExporting || appState.syncConfiguration.enabledTypes.isEmpty)
+                    .disabled(isExporting || resolvedTypes.isEmpty)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
+                } footer: {
+                    if resolvedTypes.isEmpty {
+                        Text("Turn on at least one channel above to enable the Export button.")
+                            .font(.caption)
+                    } else {
+                        Text("\(resolvedTypes.count) categor\(resolvedTypes.count == 1 ? "y" : "ies") will be included.")
+                            .font(.caption)
+                    }
                 }
             }
             .navigationTitle("Manual Export")
@@ -120,6 +242,42 @@ struct ManualExportView: View {
         }
     }
 
+    private var channelsSection: some View {
+        ForEach(ExportChannel.allCases) { channel in
+            Section {
+                channelToggleRow(channel)
+                if enabledChannels.contains(channel) {
+                    let count = channel.types(in: Set(appState.syncConfiguration.enabledTypes)).count
+                    LabeledContent("Categories included") {
+                        Text("\(count)")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } footer: {
+                if channel.isSensitive {
+                    Text("Sensitive · off by default. " + channel.description)
+                        .font(.caption)
+                } else {
+                    Text(channel.description)
+                        .font(.caption)
+                }
+            }
+        }
+    }
+
+    private func channelToggleRow(_ channel: ExportChannel) -> some View {
+        Toggle(isOn: Binding(
+            get: { enabledChannels.contains(channel) },
+            set: { newValue in
+                if newValue { enabledChannels.insert(channel) }
+                else { enabledChannels.remove(channel) }
+            }
+        )) {
+            Label(channel.displayName, systemImage: channel.iconSystemName)
+        }
+    }
+
     private var dateRange: (Date, Date) {
         let cal = Calendar.current
         let now = Date()
@@ -144,7 +302,7 @@ struct ManualExportView: View {
         let (start, end) = dateRange
         do {
             let result = try await appState.runManualExport(
-                types: appState.syncConfiguration.enabledTypes,
+                types: resolvedTypes,
                 startDate: start,
                 endDate: end,
                 format: format
